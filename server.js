@@ -7,7 +7,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// In-memory daily vegetable catalog (synchronized with wholesale market rates)
+// In-memory daily vegetable catalog (synchronized with Koyambedu wholesale market rates)
 let vegetables = [
   { id: "veg_1", nameEnglish: "Country Tomato", nameTamil: "நாட்டு தக்காளி", unit: "kg", weightLabel: "500 g", marketPricePerUnit: 35.0, discountPercentage: 10.0, isAvailable: true, category: "DAILY_ESSENTIALS", emoji: "🍅" },
   { id: "veg_2", nameEnglish: "Bellary Onion", nameTamil: "பெல்லாரி வெங்காயம்", unit: "kg", weightLabel: "1 kg", marketPricePerUnit: 45.0, discountPercentage: 5.0, isAvailable: true, category: "DAILY_ESSENTIALS", emoji: "🧅" },
@@ -28,14 +28,14 @@ let vegetables = [
 let storeHub = {
   storeName: "Freshzone Wholesale Main Distribution Hub",
   shopNumber: "Shop #42, Main Distribution Center",
-  addressText: "Main Distribution Center, Wholesale Market, Chennai - 600092",
+  addressText: "Main Distribution Center, Koyambedu Wholesale Market, Chennai - 600092",
   latitude: 13.0694,
   longitude: 80.1948,
   maxDeliveryRadiusKm: 5.0,
   contactPhone: "+91 98400 11223"
 };
 
-// In-memory persistent order store
+// In-memory persistent order store (backed by process lifecycle)
 let orders = [
   {
     orderId: "KB-101",
@@ -100,12 +100,16 @@ let orders = [
 app.get('/api/health', (req, res) => {
   res.json({
     status: "online",
-    service: "Fresh Zone Quick-Commerce Global Relay",
+    service: "Koyambedu Quick-Commerce Global Relay",
     activeOrders: orders.length,
     catalogItems: vegetables.length,
     timestamp: new Date().toISOString()
   });
 });
+
+// ==========================================
+// VEGETABLE CATALOG & DAILY PRICING ENDPOINTS
+// ==========================================
 
 // 1. Get Live Vegetable Catalog & Prices
 app.get('/api/vegetables', (req, res) => {
@@ -125,41 +129,53 @@ app.post('/api/vegetables/prices', (req, res) => {
       if (item.discountPercentage != null) veg.discountPercentage = Number(item.discountPercentage);
       if (item.isAvailable != null) veg.isAvailable = Boolean(item.isAvailable);
       updatedCount++;
+      console.log(`[CLOUD RATE UPDATE] ${veg.nameEnglish} -> Price: ₹${veg.marketPricePerUnit}, Disc: ${veg.discountPercentage}%, Avail: ${veg.isAvailable}`);
     }
   }
 
-  res.json({ success: true, updatedCount, vegetables });
+  res.json({
+    success: true,
+    updatedCount,
+    vegetables
+  });
 });
 
 // 3. Full Vegetable Catalog Sync
 app.post('/api/vegetables/sync', (req, res) => {
   if (Array.isArray(req.body) && req.body.length > 0) {
     vegetables = req.body;
+    console.log(`[CLOUD CATALOG SYNC] Full catalog updated with ${vegetables.length} items`);
     res.json({ success: true, count: vegetables.length, vegetables });
   } else {
     res.status(400).json({ error: "Expected non-empty array of vegetables" });
   }
 });
 
+// ==========================================
+// ORDER LIFECYCLE ENDPOINTS
+// ==========================================
+
 // 4. Get All Orders
 app.get('/api/orders', (req, res) => {
   res.json(orders);
 });
 
-// 5. Get Pending Orders
+// 5. Get Pending Orders (For Delivery Partner Radar)
 app.get('/api/orders/pending', (req, res) => {
   const pending = orders.filter(o => o.status === 'PLACED');
   res.json(pending);
 });
 
-// 6. Get Single Order
+// 6. Get Single Order (For Customer Live Tracking & Handover)
 app.get('/api/orders/:id', (req, res) => {
   const order = orders.find(o => o.orderId === req.params.id);
-  if (!order) return res.status(404).json({ error: "Order not found" });
+  if (!order) {
+    return res.status(404).json({ error: "Order not found" });
+  }
   res.json(order);
 });
 
-// 7. Place New Order
+// 7. Place New Order (Customer App)
 app.post('/api/orders', (req, res) => {
   const newOrder = req.body;
   if (!newOrder.orderId) {
@@ -168,6 +184,7 @@ app.post('/api/orders', (req, res) => {
   newOrder.orderTimeMillis = newOrder.orderTimeMillis || Date.now();
   newOrder.status = newOrder.status || 'PLACED';
 
+  // Check if exists
   const existingIndex = orders.findIndex(o => o.orderId === newOrder.orderId);
   if (existingIndex >= 0) {
     orders[existingIndex] = newOrder;
@@ -175,14 +192,18 @@ app.post('/api/orders', (req, res) => {
     orders.unshift(newOrder);
   }
 
+  console.log(`[CLOUD] New Order Placed: #${newOrder.orderId} | Customer: ${newOrder.customerAddress?.customerName} | Total: ₹${newOrder.totalAmount}`);
   res.status(201).json(newOrder);
 });
 
-// 8. Accept Order (Delivery Partner)
+// 8. Accept Order (Delivery Partner App)
 app.put('/api/orders/:id/accept', (req, res) => {
   const { partnerId, partnerName, partnerPhone, driverLat, driverLng } = req.body;
   const order = orders.find(o => o.orderId === req.params.id);
-  if (!order) return res.status(404).json({ error: "Order not found" });
+
+  if (!order) {
+    return res.status(404).json({ error: "Order not found" });
+  }
 
   order.status = 'ACCEPTED';
   order.assignedDeliveryPartnerId = partnerId || "DP_CHENNAI_1";
@@ -191,32 +212,45 @@ app.put('/api/orders/:id/accept', (req, res) => {
   if (driverLat != null) order.driverCurrentLatitude = driverLat;
   if (driverLng != null) order.driverCurrentLongitude = driverLng;
 
+  console.log(`[CLOUD] Order Accepted: #${order.orderId} by ${order.assignedDeliveryPartnerName}`);
   res.json(order);
 });
 
-// 9. Update Order Status
+// 9. Update Order Status (PICKED_UP -> OUT_FOR_DELIVERY -> DELIVERED)
 app.put('/api/orders/:id/status', (req, res) => {
   const { status, driverLat, driverLng } = req.body;
   const order = orders.find(o => o.orderId === req.params.id);
-  if (!order) return res.status(404).json({ error: "Order not found" });
+
+  if (!order) {
+    return res.status(404).json({ error: "Order not found" });
+  }
 
   order.status = status;
   if (driverLat != null) order.driverCurrentLatitude = driverLat;
   if (driverLng != null) order.driverCurrentLongitude = driverLng;
 
+  console.log(`[CLOUD] Order Status Changed: #${order.orderId} -> ${status}`);
   res.json(order);
 });
 
-// 10. Stream Driver Live GPS
+// 10. Stream Live Driver GPS Coordinates (From Rider Phone to Cloud)
 app.post('/api/orders/:id/location', (req, res) => {
   const { latitude, longitude } = req.body;
   const order = orders.find(o => o.orderId === req.params.id);
-  if (!order) return res.status(404).json({ error: "Order not found" });
+
+  if (!order) {
+    return res.status(404).json({ error: "Order not found" });
+  }
 
   order.driverCurrentLatitude = latitude;
   order.driverCurrentLongitude = longitude;
 
-  res.json({ success: true, orderId: order.orderId, driverCurrentLatitude: latitude, driverCurrentLongitude: longitude });
+  res.json({
+    success: true,
+    orderId: order.orderId,
+    driverCurrentLatitude: latitude,
+    driverCurrentLongitude: longitude
+  });
 });
 
 // 11. Admin Fleet Oversight: Get Active Driver Locations
@@ -238,7 +272,7 @@ app.get('/api/drivers', (req, res) => {
   res.json(drivers);
 });
 
-// 12. Store Hub Management
+// 12. Store Hub Management (Location, Coordinates & Delivery Radius)
 app.get('/api/hub', (req, res) => {
   res.json(storeHub);
 });
@@ -253,14 +287,18 @@ app.post('/api/hub', (req, res) => {
   if (maxDeliveryRadiusKm != null) storeHub.maxDeliveryRadiusKm = Number(maxDeliveryRadiusKm);
   if (contactPhone) storeHub.contactPhone = contactPhone;
 
+  console.log(`[CLOUD HUB UPDATE] Lat: ${storeHub.latitude}, Lng: ${storeHub.longitude}, Radius: ${storeHub.maxDeliveryRadiusKm}km, Name: ${storeHub.storeName}`);
   res.json({ success: true, storeHub });
 });
 
-// 13. Admin Master Delivery Override
+// 13. Admin Master Delivery Override (Emergency completion)
 app.post('/api/orders/:id/admin-deliver', (req, res) => {
   const order = orders.find(o => o.orderId === req.params.id);
-  if (!order) return res.status(404).json({ error: "Order not found" });
+  if (!order) {
+    return res.status(404).json({ error: "Order not found" });
+  }
   order.status = 'DELIVERED';
+  console.log(`[CLOUD MASTER OVERRIDE] Order #${order.orderId} marked DELIVERED by Admin Override`);
   res.json({ success: true, order });
 });
 
@@ -286,6 +324,7 @@ app.post('/api/banking', (req, res) => {
   if (accountNumber) storeBanking.accountNumber = accountNumber;
   if (ifscCode) storeBanking.ifscCode = ifscCode;
   if (isVerified != null) storeBanking.isVerified = Boolean(isVerified);
+  console.log(`[BANKING UPDATE] Registered bank: ${storeBanking.bankName} | Payee: ${storeBanking.accountHolderName} | UPI: ${storeBanking.upiId}`);
   res.json({ success: true, storeBanking });
 });
 
@@ -304,6 +343,7 @@ app.post('/api/payout/config', (req, res) => {
   const { basePayoutPerOrder, dailySurgeAmount } = req.body;
   if (basePayoutPerOrder != null) payoutConfig.basePayoutPerOrder = Number(basePayoutPerOrder);
   if (dailySurgeAmount != null) payoutConfig.dailySurgeAmount = Number(dailySurgeAmount);
+  console.log(`[PAYOUT CONFIG UPDATE] Base: ₹${payoutConfig.basePayoutPerOrder} | Surge: ₹${payoutConfig.dailySurgeAmount}`);
   res.json({ success: true, payoutConfig });
 });
 
@@ -314,6 +354,7 @@ app.put('/api/orders/:id/pack', (req, res) => {
   order.status = 'PACKED';
   order.isPickedByPicker = true;
   if (req.body.pickerName) order.pickerName = req.body.pickerName;
+  console.log(`[STORE HUB PICKER] Order #${order.orderId} packed and sealed by ${order.pickerName}`);
   res.json({ success: true, order });
 });
 
@@ -344,15 +385,25 @@ app.post('/api/orders/:id/cancel', (req, res) => {
   order.cancelledBy = cancelledBy || 'Delivery Partner';
 
   if (order.status !== 'CANCELLED') {
+    // Reassigned to store hub queue
     order.assignedDeliveryPartnerId = null;
     order.assignedDeliveryPartnerName = null;
     order.assignedDeliveryPartnerPhone = null;
     order.isQrVerifiedByDriver = false;
+    console.log(`[ORDER UNASSIGNED] Order #${order.orderId} returned to Store Hub queue: ${reason}`);
+  } else {
+    console.log(`[ORDER CANCELLED] Order #${order.orderId} CANCELLED by ${order.cancelledBy}: ${reason}`);
   }
 
   res.json({ success: true, order });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Fresh Zone API listening on port ${PORT}`);
+  console.log(`=======================================================`);
+  console.log(`🚀 Koyambedu Veg Delivery Global Cloud Sync API running`);
+  console.log(`📡 Port: ${PORT}`);
+  console.log(`🌐 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`🥦 Vegetables endpoint: http://localhost:${PORT}/api/vegetables`);
+  console.log(`📦 Orders endpoint: http://localhost:${PORT}/api/orders`);
+  console.log(`=======================================================`);
 });
