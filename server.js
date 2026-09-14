@@ -24,6 +24,17 @@ let vegetables = [
   { id: "veg_13", nameEnglish: "Curry Leaves", nameTamil: "கருவேப்பிலை", unit: "bunch", weightLabel: "1 bunch", marketPricePerUnit: 10.0, discountPercentage: 0.0, isAvailable: true, category: "LEAFY_GREENS", emoji: "🍃" }
 ];
 
+// In-memory Store Hub Configuration (managed by Vendor Admin)
+let storeHub = {
+  storeName: "Freshzone Wholesale Main Distribution Hub",
+  shopNumber: "Shop #42, Main Distribution Center",
+  addressText: "Main Distribution Center, Koyambedu Wholesale Market, Chennai - 600092",
+  latitude: 13.0694,
+  longitude: 80.1948,
+  maxDeliveryRadiusKm: 5.0,
+  contactPhone: "+91 98400 11223"
+};
+
 // In-memory persistent order store (backed by process lifecycle)
 let orders = [
   {
@@ -31,8 +42,8 @@ let orders = [
     customerAddress: {
       customerName: "Ramesh Kumar",
       customerPhone: "+91 98401 23456",
-      fullAddressText: "Plot 45, 3rd Main Rd, MMDA Colony, Arumbakkam",
-      landmark: "Near MMDA Park",
+      fullAddressText: "Plot 45, 3rd Main Rd, Anna Nagar West, Chennai",
+      landmark: "Near Metro Station",
       latitude: 13.0682,
       longitude: 80.2030,
       distanceFromKoyambeduKm: 1.1,
@@ -258,7 +269,130 @@ app.get('/api/drivers', (req, res) => {
     customerAddress: o.customerAddress
   }));
 
-  res.json(drivers);
+// 12. Store Hub Management (Location, Coordinates & Delivery Radius)
+app.get('/api/hub', (req, res) => {
+  res.json(storeHub);
+});
+
+app.post('/api/hub', (req, res) => {
+  const { storeName, shopNumber, addressText, latitude, longitude, maxDeliveryRadiusKm, contactPhone } = req.body;
+  if (storeName) storeHub.storeName = storeName;
+  if (shopNumber) storeHub.shopNumber = shopNumber;
+  if (addressText) storeHub.addressText = addressText;
+  if (latitude != null) storeHub.latitude = Number(latitude);
+  if (longitude != null) storeHub.longitude = Number(longitude);
+  if (maxDeliveryRadiusKm != null) storeHub.maxDeliveryRadiusKm = Number(maxDeliveryRadiusKm);
+  if (contactPhone) storeHub.contactPhone = contactPhone;
+
+  console.log(`[CLOUD HUB UPDATE] Lat: ${storeHub.latitude}, Lng: ${storeHub.longitude}, Radius: ${storeHub.maxDeliveryRadiusKm}km, Name: ${storeHub.storeName}`);
+  res.json({ success: true, storeHub });
+});
+
+// 13. Admin Master Delivery Override (Emergency completion)
+app.post('/api/orders/:id/admin-deliver', (req, res) => {
+  const order = orders.find(o => o.orderId === req.params.id);
+  if (!order) {
+    return res.status(404).json({ error: "Order not found" });
+  }
+  order.status = 'DELIVERED';
+  console.log(`[CLOUD MASTER OVERRIDE] Order #${order.orderId} marked DELIVERED by Admin Override`);
+  res.json({ success: true, order });
+});
+
+// 14. Merchant Banking Registration for GPay
+let storeBanking = {
+  bankName: "HDFC Bank Ltd",
+  accountHolderName: "Fresh Zone Quick Commerce Pvt Ltd",
+  upiId: "freshzone.pay@okaxis",
+  accountNumber: "50200084729104",
+  ifscCode: "HDFC0001234",
+  isVerified: true
+};
+
+app.get('/api/banking', (req, res) => {
+  res.json(storeBanking);
+});
+
+app.post('/api/banking', (req, res) => {
+  const { bankName, accountHolderName, upiId, accountNumber, ifscCode, isVerified } = req.body;
+  if (bankName) storeBanking.bankName = bankName;
+  if (accountHolderName) storeBanking.accountHolderName = accountHolderName;
+  if (upiId) storeBanking.upiId = upiId;
+  if (accountNumber) storeBanking.accountNumber = accountNumber;
+  if (ifscCode) storeBanking.ifscCode = ifscCode;
+  if (isVerified != null) storeBanking.isVerified = Boolean(isVerified);
+  console.log(`[BANKING UPDATE] Registered bank: ${storeBanking.bankName} | Payee: ${storeBanking.accountHolderName} | UPI: ${storeBanking.upiId}`);
+  res.json({ success: true, storeBanking });
+});
+
+// 15. Delivery Partner Payouts & Daily Surge
+let payoutConfig = {
+  basePayoutPerOrder: 45.0,
+  dailySurgeAmount: 20.0,
+  weeklySettlementDay: "Monday"
+};
+
+app.get('/api/payout/config', (req, res) => {
+  res.json(payoutConfig);
+});
+
+app.post('/api/payout/config', (req, res) => {
+  const { basePayoutPerOrder, dailySurgeAmount } = req.body;
+  if (basePayoutPerOrder != null) payoutConfig.basePayoutPerOrder = Number(basePayoutPerOrder);
+  if (dailySurgeAmount != null) payoutConfig.dailySurgeAmount = Number(dailySurgeAmount);
+  console.log(`[PAYOUT CONFIG UPDATE] Base: ₹${payoutConfig.basePayoutPerOrder} | Surge: ₹${payoutConfig.dailySurgeAmount}`);
+  res.json({ success: true, payoutConfig });
+});
+
+// 16. Store Hub Picker: Mark order PACKED
+app.put('/api/orders/:id/pack', (req, res) => {
+  const order = orders.find(o => o.orderId === req.params.id);
+  if (!order) return res.status(404).json({ error: "Order not found" });
+  order.status = 'PACKED';
+  order.isPickedByPicker = true;
+  if (req.body.pickerName) order.pickerName = req.body.pickerName;
+  console.log(`[STORE HUB PICKER] Order #${order.orderId} packed and sealed by ${order.pickerName}`);
+  res.json({ success: true, order });
+});
+
+// 17. Delivery Partner: QR Code Pickup Verification
+app.put('/api/orders/:id/verify-pickup', (req, res) => {
+  const order = orders.find(o => o.orderId === req.params.id);
+  if (!order) return res.status(404).json({ error: "Order not found" });
+  const { qrCode, latitude, longitude } = req.body;
+  const expectedQr = order.allottedQrCode || `QR-FZ-${order.orderId}`;
+  if (qrCode && qrCode.trim().toUpperCase() !== expectedQr.toUpperCase()) {
+    return res.status(400).json({ error: "INVALID_QR_CODE", message: `Scanned QR ${qrCode} does not match ${expectedQr}` });
+  }
+  order.status = 'PICKED_UP';
+  order.isQrVerifiedByDriver = true;
+  if (latitude != null) order.driverCurrentLatitude = Number(latitude);
+  if (longitude != null) order.driverCurrentLongitude = Number(longitude);
+  res.json({ success: true, order });
+});
+
+// 18. Delivery Partner / Admin: Cancel or Reassign Order
+app.post('/api/orders/:id/cancel', (req, res) => {
+  const { reason, cancelledBy, status } = req.body;
+  const order = orders.find(o => o.orderId === req.params.id);
+  if (!order) return res.status(404).json({ error: "Order not found" });
+
+  order.status = status || 'CANCELLED';
+  order.cancellationReason = reason || 'Cancelled by delivery partner';
+  order.cancelledBy = cancelledBy || 'Delivery Partner';
+
+  if (order.status !== 'CANCELLED') {
+    // Reassigned to store hub queue
+    order.assignedDeliveryPartnerId = null;
+    order.assignedDeliveryPartnerName = null;
+    order.assignedDeliveryPartnerPhone = null;
+    order.isQrVerifiedByDriver = false;
+    console.log(`[ORDER UNASSIGNED] Order #${order.orderId} returned to Store Hub queue: ${reason}`);
+  } else {
+    console.log(`[ORDER CANCELLED] Order #${order.orderId} CANCELLED by ${order.cancelledBy}: ${reason}`);
+  }
+
+  res.json({ success: true, order });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
