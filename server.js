@@ -26,9 +26,9 @@ let vegetables = [
 
 // In-memory Store Hub Configuration (managed by Vendor Admin)
 let storeHub = {
-  storeName: "Freshzone Wholesale Main Distribution Hub",
-  shopNumber: "Shop #42, Main Distribution Center",
-  addressText: "Main Distribution Center, Koyambedu Wholesale Market, Chennai - 600092",
+  storeName: "Fresh Zone Store Hub",
+  shopNumber: "Hub #01",
+  addressText: "Store Distribution Center (Pinned by Admin)",
   latitude: 13.0694,
   longitude: 80.1948,
   maxDeliveryRadiusKm: 5.0,
